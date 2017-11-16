@@ -1,0 +1,14 @@
+{
+  "private": true,
+  "devDependencies": {
+    "aws-api-gateway-client": "^0.2.7",
+    "aws-iot-device-sdk": "^2.0.1",
+    "aws-sdk": "^2.137.0",
+    "json-loader": "^0.5.4",
+    "webpack": "^3.2.0",
+    "async": "^2.1.4"
+  },
+  "dependencies": {
+    "amazon-cognito-identity-js": "^1.19.0"
+  }
+}

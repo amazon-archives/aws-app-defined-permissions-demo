@@ -1,0 +1,12 @@
+# keys, sensitive data
+*.pem
+*.key
+*.crt
+env_vars.sh
+serverless-auth.output.yaml
+
+# libraries
+node_modules
+.DS_Store
+
+*.zip

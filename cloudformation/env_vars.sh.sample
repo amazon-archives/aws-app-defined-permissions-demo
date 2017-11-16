@@ -1,0 +1,6 @@
+#! /bin/bash
+export AWS_REGION=us-west-2
+export CF_BUCKET=<S3 bucket>
+export CF_TEMPLATE=serverless-auth.serverless.yaml
+export CF_TEMPLATE_OUTPUT=serverless-auth.output.yaml
+export CERTIFICATE_ID=<iot thing certificate created by configureCert.js>
