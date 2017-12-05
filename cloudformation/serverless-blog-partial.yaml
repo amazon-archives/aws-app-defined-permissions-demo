@@ -8,10 +8,7 @@
 # IAM Roles and Lambda permissions to support the above components
 #
 
-# TODO: do we need TopicSubscriptionFunction (and related lambda permission / iam role?)
-
 AWSTemplateFormatVersion: '2010-09-09'
-Transform: AWS::Serverless-2016-10-31
 Description: Serverless Auth Blog
 
 # Input parameters passed into the template
@@ -138,115 +135,202 @@ Resources:
             Effect: Allow
             Action: cognito-idp:ListUsers
             Resource: !Ref CognitoUserPoolArn
-
-  # This is the role granted to TopicSubscriptionFunction when it runs
-  SubscriptionLambdaExecRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-        - Effect: Allow
-          Action: sts:AssumeRole
-          Principal:
-            Service: lambda.amazonaws.com
-      ManagedPolicyArns:
-      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Policies:
-      - PolicyName: ReadWriteSubscriptionDDBTable
+      - PolicyName: CustomResourceLambdaPermissions
         PolicyDocument:
           Version: '2012-10-17'
           Statement:
-          - Sid: AllowDDBTableAccess
+          - Sid: AllowRolePolicyUpdate
             Effect: Allow
-            Action:
-            - dynamodb:*Item
-            - dynamodb:Query
-            - dynamodb:Scan
-            Resource: !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TopicSubscriptionDDBTable}
+            Action: iam:UpdateAssumeRolePolicy
+            Resource: '*'
 
   #
-  # Lambda Functions
+  # Lambda Function
   #
 
   PolicyGeneratorFunction:
-    Type: AWS::Serverless::Function
+    Type: AWS::Lambda::Function
     Properties:
       Description: Generates a custom IAM policy based on subscriptions recored in DynamoDB
       Runtime: python3.6
       MemorySize: 512
       Timeout: 200
       Role: !GetAtt PolicyGeneratorLambdaExecRole.Arn
-      CodeUri: s3://amaas-poc/ffe77798af22d068869ec82cb8b9f637
-      Handler: generate-policy.lambda_handler
       Environment:
         Variables:
           COGNITO_USER_POOL_ID: !Ref CognitoUserPoolId
           IOT_ROLE: !Ref DefaultIoTRole
           SUBSCRIPTION_TABLE: !Ref TopicSubscriptionDDBTable
-      Events:
-        PolicyApi:
-          Type: Api
-          Properties:
-            Method: GET
-            Path: /getBookUpdateAccessToken
-            RestApiId:
-              Ref: RestApi
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import json
+          import os
 
-  TopicSubscriptionFunction:
-    Type: AWS::Serverless::Function
+          from boto3.dynamodb.conditions import Key, Attr
+          from datetime import date, datetime
+
+          print('Loading function')
+          aws_region = os.environ['AWS_DEFAULT_REGION']
+          dynamodb = boto3.resource('dynamodb')
+          sts = boto3.client('sts')
+          cognito = boto3.client('cognito-idp')
+
+          subscription_table = dynamodb.Table(os.environ['SUBSCRIPTION_TABLE'])
+
+
+          def respond(err, res=None):
+              return {
+                  'statusCode': err['code'] if err else '200',
+                  'body': err['message'] if err else json.dumps(
+                      res,
+                      default=datetime_handler),
+                  'headers': {
+                      'Content-Type': 'application/json',
+                  },
+              }
+
+          # json does not have a default datetime
+          def datetime_handler(obj):
+              if isinstance(obj, (datetime, date)):
+                  return obj.isoformat()
+              raise TypeError("Type {} not serializable".format(type(obj)))
+
+
+          def lambda_handler(event, context):
+              '''Scans the topic subscription dynamodb table and builds a
+              custom IAM policy based on subscriptions.
+              '''
+              print("Received event: " + json.dumps(event, indent=2))
+              print("Received context: " + str( vars(context) ))
+
+              operation = event["http_method"]
+              book = event["book"]
+              acc_id = context.invoked_function_arn.split(":")[4]
+
+              response = cognito.list_users(
+                  UserPoolId=os.environ['COGNITO_USER_POOL_ID'],
+                  Filter='sub = "{}"'.format(event["context"]["sub"])
+              )
+              print(response)
+
+              client_id = response["Users"][0]["Username"]
+
+              if operation == 'GET':
+                  response = subscription_table.get_item(
+                      Key={
+                          'clientid' : client_id,
+                          'topic' : book
+                      }
+                  )
+
+                  print(response)
+                  topic_policy = ''
+
+                  # if no records are returned, deny access
+                  if not response or "Item" not in response:
+                      return respond({'code': '403', 'message': 'Forbidden'})
+                  else:
+                      topic = "arn:aws:iot:{}:{}:topic/{}".format(aws_region, acc_id, book)
+                      topic_filter = "arn:aws:iot:{}:{}:topicfilter/{}".format(aws_region, acc_id, book)
+
+                      # Create a policy
+                      topic_policy = {
+                          "Version": "2012-10-17",
+                          "Statement": [
+                              {
+                                  "Effect": "Allow",
+                                  "Action": "iot:Connect",
+                                  "Resource": "*"
+                              },
+                              {
+                                  "Effect": "Allow",
+                                  "Action": "iot:Subscribe",
+                                  "Resource": topic_filter
+                              },
+                              {
+                                  "Effect": "Allow",
+                                  "Action": "iot:Receive",
+                                  "Resource": topic
+                              }
+                          ]
+                      }
+                      print(json.dumps(topic_policy))
+
+                  assumed_role = sts.assume_role(
+                      RoleArn='arn:aws:iam::{}:role/{}'.format(acc_id, os.environ['IOT_ROLE']),
+                      RoleSessionName='{}_session'.format(client_id),
+                      Policy=json.dumps(topic_policy)
+                  )
+                  temp_creds = assumed_role['Credentials']
+                  temp_creds['Topics'] = book
+
+                  return respond(None, temp_creds)
+              else:
+                  return respond({'code': '400', 'message': ValueError('Unsupported method "{}"'.format(operation))})
+      Handler: index.lambda_handler
+
+  CustomResourceLambda:
+    Type: AWS::Lambda::Function
+    DependsOn:
+    - PolicyGeneratorFunction
+    - DefaultIoTRole
     Properties:
-      Description: Updates DynamoDB table with topic subscriptions for a user
+      Description: Sets up the trust between Lambda execution role and default IoT role
       Runtime: python3.6
-      MemorySize: 256
-      Timeout: 200
-      Role: !GetAtt SubscriptionLambdaExecRole.Arn
-      CodeUri: s3://amaas-poc/ffe77798af22d068869ec82cb8b9f637
-      Handler: subscribe-topic.lambda_handler
+      MemorySize: 512
+      Timeout: 30
+      Role: !GetAtt PolicyGeneratorLambdaExecRole.Arn
+      Handler: index.lambda_handler
       Environment:
         Variables:
-          SUBSCRIPTION_TABLE: !Ref TopicSubscriptionDDBTable
-      Events:
-        SubscribeApi:
-          Type: Api
-          Properties:
-            Method: ANY
-            Path: /subscribe
-            RestApiId:
-              Ref: RestApi
+          IOT_ROLE: !Ref DefaultIoTRole
+          POLICY_GENERATOR_FN: !Ref PolicyGeneratorFunction
+          LAMBDA_EXEC_ROLE: !Ref PolicyGeneratorLambdaExecRole
+      Code:
+        ZipFile: !Sub |
+          import boto3, json, os
+          import cfnresponse
 
-  #
-  # Lambda Function Permissions
-  #
+          def lambda_handler(event, context):
+            print("Received event. Full parameters: {}".format(json.dumps(event)))
+            iam = boto3.client('iam')
+            trust_policy = {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "sts:AssumeRole",
+                  "Principal": {
+                    "Service": "lambda.amazonaws.com",
+                    "AWS": "arn:aws:sts::{}:assumed-role/{}/{}".format(
+                      event["StackId"].split(":")[4],
+                      os.environ['LAMBDA_EXEC_ROLE'],
+                      os.environ['POLICY_GENERATOR_FN'])
+                  }
+                }
+              ]}
 
-  # Allow API Gateway to invoke PolicyGeneratorFunction
-  PolicyLambdaInvokePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Principal: apigateway.amazonaws.com
-      SourceAccount: !Ref AWS::AccountId
-      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:/${RestApi}/*
-      Action: lambda:InvokeFunction
-      FunctionName: !GetAtt PolicyGeneratorFunction.Arn
+            response = iam.update_assume_role_policy(
+              PolicyDocument=json.dumps(trust_policy),
+              RoleName=os.environ['IOT_ROLE']
+            )
 
-  # Allow API Gateway to inoke TopicSubscriptionFunction
-  SubscriptionLambdaInvokePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      Principal: apigateway.amazonaws.com
-      SourceAccount: !Ref AWS::AccountId
-      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:/${RestApi}/*
-      FunctionName: !GetAtt TopicSubscriptionFunction.Arn
+            print("Called IAM.update_assume_role_policy. result={}".format(json.dumps(response)))
+            cfnresponse.send (event, context, cfnresponse.SUCCESS, {}, "CustomResourcePhysicalID")
+
 
   #
   # API Gateway APIs
   #
 
   RestApi:
-    Type: AWS::Serverless::Api
+    Type: AWS::ApiGateway::RestApi
     Properties:
-      DefinitionBody:
+      Name:
+        Ref: AWS::StackName
+      Description: Trade Book API
+      Body:
         info:
           title:
             Ref: AWS::StackName
@@ -293,47 +377,37 @@ Resources:
                 type: aws
                 uri:
                   Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PolicyGeneratorFunction.Arn}/invocations
-          /subscribe:
-            x-amazon-apigateway-any-method:
-              consumes:
-              - application/json
-              produces:
-              - application/json
-              responses:
-                '200':
-                  description: 200 response
-                  headers: {}
-                  schema:
-                    $ref: '#/definitions/Empty'
-                '400':
-                  description: 400 response
-                  headers: {}
-                  schema:
-                    $ref: '#/definitions/Error'
-                '403':
-                  description: 403 response
-                  headers: {}
-                  schema:
-                    $ref: '#/definitions/Error'
-              security:
-              - serverless-auth-user-pool: []
-              x-amazon-apigateway-integration:
-                contentHandling: CONVERT_TO_TEXT
-                httpMethod: POST
-                passthroughBehavior: when_no_templates
-                requestTemplates:
-                  application/json: "{\n\t\"sub\" : \"$context.authorizer.claims.sub\"\
-                    ,\n\t\"http_method\" : \"$context.httpMethod\",\n\t\"body\" :\
-                    \ $input.json('$')\n}"
-                responses:
-                  '.*httpStatus'': ''400.*':
-                    statusCode: '400'
-                  default:
-                    statusCode: '200'
-                type: aws
-                uri:
-                  Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TopicSubscriptionFunction.Arn}/invocations
         schemes:
         - https
         swagger: '2.0'
-      StageName: Prod
+
+  #
+  # Permission to allow API Gateway to invoke Lambda function
+  #
+
+  ConfigLambdaPermission:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+    - RestApi
+    - PolicyGeneratorFunction
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref PolicyGeneratorFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn:
+          Fn::Sub: arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*/GET/getBookUpdateAccessToken
+
+  #
+  # Custom CloudFormation resource to update trust policy between lambda execution role and default IoT role
+  #
+  UpdateTrustPolicy:
+    Type: Custom::UpdateTrust
+    DependsOn:
+    - PolicyGeneratorFunction
+    - DefaultIoTRole
+    - CustomResourceLambda
+    Properties:
+      Region:
+        Ref: AWS::Region
+      ServiceToken:
+        Fn::GetAtt: CustomResourceLambda.Arn
