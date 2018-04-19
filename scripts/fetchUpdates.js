@@ -130,7 +130,8 @@ async.waterfall([
                     device
                       .on('message', function(topic, payload) {
                         console.log('message', topic, payload.toString());
-                        next(null);
+                        console.log("press ctrl-c to quit...");
+                        //next(null);
                       });
 
                 }).catch( function(result){
@@ -151,5 +152,4 @@ async.waterfall([
   if (err) {
     console.log(err);
   }
-  console.log("press ctrl-c to quit...");
 });
