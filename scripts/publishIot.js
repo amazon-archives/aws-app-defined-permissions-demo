@@ -1,10 +1,11 @@
 var awsIot = require('aws-iot-device-sdk');
+var iotEndpoint = process.env.IOT_ENDPOINT
 var device = awsIot.device({
    keyPath: '../iot/serverless-auth.private.key',
   certPath: '../iot/serverless-auth.cert.pem',
     caPath: '../iot/root-CA.crt',
   clientId: 'serverless-auth-pub',
-      host: 'a2d36hv5oulwb1.iot.us-west-2.amazonaws.com'
+      host: iotEndpoint
 });
 
 console.log('Attempting to connect...');

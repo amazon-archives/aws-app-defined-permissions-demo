@@ -5,6 +5,7 @@ var awsCognito = require('amazon-cognito-identity-js');
 var apigClientFactory = require('aws-api-gateway-client').default;
 var awsIot = require('aws-iot-device-sdk');
 
+var iotEndpoint = process.env.IOT_ENDPOINT
 var region = process.env.AWS_REGION;
 AWS.config.region = region;
 
@@ -114,7 +115,7 @@ async.waterfall([
 
                     var device = awsIot.device({
                       clientId: 'serverless-auth-sub',
-                      host:     'a2ytvqq9j4ppeo.iot.us-west-2.amazonaws.com',
+                      host:     iotEndpoint,
                       protocol: 'wss',
                       accessKeyId:  body.AccessKeyId,
                       secretKey:    body.SecretAccessKey,

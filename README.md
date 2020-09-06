@@ -1,8 +1,8 @@
 # Combining static IAM roles with application logic to create application-defined, dynamic, bespoke access to AWS resources at scale
 
-When you develop applications using Amazon Cognito you can grant end users direct access to AWS resources using temporary credentials based on their group membership.  This is a great mechanism to reduce server load, simplify applications, maintain security and deliver solutions quickly.  When working at scale, with hundreds of users or thousands of resources, there are challenges to overcome.  Within a single AWS account, you are limited to 500 IAM roles and the total size of all policies attached to a role must be less than 10k.  For large applications, these limits can quickly become a challenge for role-based permissions or resource-based permissions.
+When you develop applications using Amazon Cognito you can grant end users direct access to AWS resources using temporary credentials based on their group membership. This is a great mechanism to reduce server load, simplify applications, maintain security and deliver solutions quickly. However there are scenarios when a customer may not know the permissions a user is entitled to before hand. A SaaS company for example would like to delegate the security control for resources to their customers.
 
-In this blog post we will describe a solution that generates bespoke IAM policies either at login time or at the point of accessing a resource within a serverless web application.  The access control is templated from normal IAM policies, but it ultimately application-defined.  This allows far greater flexibility around controlling which users have access to which AWS resources.  We will show how this solution helped AMaaS, an Asset Management as a Service startup, to let their customers control their own security settings while enabling AMaaS to leverage innovate services like AWS IoT for push updates.
+In this blog post we will describe a solution that generates bespoke IAM policies either at login time or at the point of accessing a resource within a serverless web application.  The access control is templated from normal IAM policies, but it ultimately application-defined. This allows far greater flexibility around controlling which users have access to which AWS resources. This example shows how a FinTech start up can delegate the control of trading book updates to the traders using their platform. Trading book updates are published to an IoT topic.
 
 ## Deploying the solution
 
@@ -62,6 +62,19 @@ Use scripts below to set up Cognito users (traders) and example topic (book) sub
 
 ### Testing the Solution
 
+* Set the AWS_REGION environment variable to the region you are using.
+
+  ```bash
+  export AWS_REGION=<your region>
+  ```
+
+* Set the IOT_ENDPOINT environment variable to your IoT ATS endpoint necause we are using the root CA issued  by Amazon Trusted Services (ATS) endpoint. You can find the endpoint using the command below.
+
+  ```bash
+  aws iot describe-endpoint --endpoint-type iot:Data-ATS
+  export IOT_ENDPOINT=<endpointAddress from command above>
+  ```
+
 * Subscribe to messages for a specific customer using the command below from the `scripts` folder.
   `node fetchUpdates.js fund1_trader1 Fund1_U5ser_1@ fund1/book1`.
 * Now open another termnal and publish messages using the command below from the `scripts` folder.
@@ -74,7 +87,7 @@ Use scripts below to set up Cognito users (traders) and example topic (book) sub
   finished writing messages... press ctrl-c to quit...
   ```
 
-* If you go back to the first terminal running the fetech updates script, you should see something like this.
+* If you go back to the first terminal running the fetch updates script, you should see something like this.
 You should see an output like this.
 
   ```bash
